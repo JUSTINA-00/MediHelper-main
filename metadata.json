@@ -1,0 +1,6 @@
+{
+  "name": "MediPlain",
+  "description": "A medical document intelligence web app that simplifies complex medical documents into plain language for patients.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}

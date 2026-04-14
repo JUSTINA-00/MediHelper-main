@@ -1,0 +1,25 @@
+# MediPlain — Python Dependencies
+# Install: pip install -r requirements.txt
+
+# Core web framework
+flask>=3.0.0
+flask-cors>=4.0.0
+
+# PDF text extraction
+pdfplumber>=0.10.0
+
+# Image processing
+Pillow>=10.0.0
+
+# HuggingFace models (OCR + image classification)
+transformers>=4.40.0
+torch>=2.2.0          # CPU version is fine: pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+# Fuzzy string matching for allergy checking
+rapidfuzz>=3.0.0
+
+# Optional: For better sentence processing
+spacy>=3.7.0          # After install: python -m spacy download en_core_web_sm
+
+# HTTP requests (for Ollama local LLM)
+requests>=2.31.0
