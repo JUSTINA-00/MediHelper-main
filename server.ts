@@ -1,15 +1,11 @@
-/**
- * MediPlain — Express API Server
- * Uses Gemini for document analysis (text extraction + plain-language simplification).
- * Run alongside Vite: `npm run server` (port 5000) + `npm run dev` (port 3000)
- */
+import dotenv from 'dotenv';
+dotenv.config({ path: '.env.local' });
 
 import express from 'express';
 import cors from 'cors';
 import multer from 'multer';
 import fs from 'fs';
 import path from 'path';
-import { GoogleGenAI } from '@google/genai';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -20,11 +16,14 @@ app.use(express.json());
 
 const upload = multer({ dest: 'uploads/' });
 
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
-const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+const GROQ_API_KEY = process.env.GROQ_API_KEY || '';
+
+if (!GROQ_API_KEY) {
+  console.warn('[MediPlain] WARNING: GROQ_API_KEY is not set. Set it in your .env.local file.');
+}
 
 // ─────────────────────────────────────────────
-// Allergy synonym map (ported from allergy_checker.py)
+// Allergy synonym map
 // ─────────────────────────────────────────────
 const ALLERGEN_SYNONYMS: Record<string, string[]> = {
   penicillin: ['penicillin','amoxicillin','amoxycillin','ampicillin','flucloxacillin','co-amoxiclav','augmentin','phenoxymethylpenicillin','piperacillin','tazobactam','piptaz'],
@@ -83,7 +82,7 @@ function checkAllergies(docText: string, patientAllergies: string[]): string[] {
 }
 
 // ─────────────────────────────────────────────
-// Drug interaction database (ported from drug_interaction.py)
+// Drug interaction database
 // ─────────────────────────────────────────────
 const DRUG_ALIASES: Record<string, string> = {
   warfarin:'warfarin', coumadin:'warfarin',
@@ -170,14 +169,15 @@ function checkInteractions(docText: string, patientMedications: string[]): strin
 }
 
 // ─────────────────────────────────────────────
-// Gemini analysis
+// Groq analysis
 // ─────────────────────────────────────────────
-async function analyseWithGemini(
+async function analyseWithGroq(
   fileBase64: string,
   mimeType: string,
   profile: Record<string, any>
 ): Promise<{ docType: string; summary: string; personalizedMeaning: string; technicalDetails: string; confidence: number }> {
-  const profileParts = [];
+
+  const profileParts: string[] = [];
   if (profile.age) profileParts.push(`Age: ${profile.age}, Gender: ${profile.gender || 'not specified'}`);
   if (profile.diagnoses?.length) profileParts.push(`Medical conditions: ${profile.diagnoses.join(', ')}`);
   if (profile.medications?.length) profileParts.push(`Current medications: ${profile.medications.join(', ')}`);
@@ -206,24 +206,56 @@ Respond with ONLY this JSON (no markdown, no backticks):
   "confidence": 85
 }`;
 
-  const response = await ai.models.generateContent({
-    model: 'gemini-2.0-flash',
-    contents: [
-      {
-        role: 'user',
-        parts: [
-          { inlineData: { mimeType, data: fileBase64 } },
-          { text: prompt },
-        ],
-      },
-    ],
+  // Build content array — include image only for supported mime types
+  const isImage = mimeType.startsWith('image/');
+  const contentParts: any[] = [];
+
+  if (isImage) {
+    contentParts.push({
+      type: 'image_url',
+      image_url: { url: `data:${mimeType};base64,${fileBase64}` },
+    });
+  } else {
+    // For PDFs or other docs, tell the model we're passing text-only
+    contentParts.push({
+      type: 'text',
+      text: `Note: A non-image file was uploaded (${mimeType}). The user is asking you to analyse a medical document. Please respond with the JSON structure as instructed, noting that you cannot see the document directly and should indicate low confidence.`,
+    });
+  }
+
+  contentParts.push({ type: 'text', text: prompt });
+
+  const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${GROQ_API_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: 'meta-llama/llama-4-scout-17b-16e-instruct',
+      messages: [{ role: 'user', content: contentParts }],
+      max_tokens: 1500,
+    }),
   });
 
-  const text = response.text?.trim() || '';
+  const data = await response.json() as any;
+
+  // Surface Groq errors clearly
+  if (!data.choices || data.choices.length === 0) {
+    const errMsg = data.error?.message || JSON.stringify(data);
+    throw new Error(`Groq API error: ${errMsg}`);
+  }
+
+  const text = data.choices[0].message.content as string;
+
   // Strip markdown fences if present
   const clean = text.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/i, '').trim();
-  const parsed = JSON.parse(clean);
-  return parsed;
+
+  try {
+    return JSON.parse(clean);
+  } catch {
+    throw new Error(`Failed to parse Groq response as JSON. Raw response: ${text.slice(0, 300)}`);
+  }
 }
 
 // ─────────────────────────────────────────────
@@ -239,33 +271,28 @@ app.post('/api/analyse', upload.single('file'), async (req, res) => {
     const filePath = req.file.path;
     const mimeType = req.file.mimetype || 'application/octet-stream';
 
-    // Read file as base64
     const fileBuffer = fs.readFileSync(filePath);
     const fileBase64 = fileBuffer.toString('base64');
 
-    // Call Gemini
-    const geminiResult = await analyseWithGemini(fileBase64, mimeType, profile);
+    const result = await analyseWithGroq(fileBase64, mimeType, profile);
 
-    // Run local safety checks on extracted technical text
-    const techText = geminiResult.technicalDetails || '';
+    const techText = result.technicalDetails || '';
     const allergyWarnings = checkAllergies(techText, profile.allergies || []);
     const interactionWarnings = checkInteractions(techText, profile.medications || []);
 
-    // Clean up temp file
     fs.unlinkSync(filePath);
 
     res.json({
-      docType: geminiResult.docType,
-      summary: geminiResult.summary,
-      personalizedMeaning: geminiResult.personalizedMeaning,
-      technicalDetails: geminiResult.technicalDetails,
-      confidence: geminiResult.confidence || 85,
+      docType: result.docType,
+      summary: result.summary,
+      personalizedMeaning: result.personalizedMeaning,
+      technicalDetails: result.technicalDetails,
+      confidence: result.confidence || 85,
       allergyWarnings,
       interactionWarnings,
     });
   } catch (err: any) {
     console.error('[MediPlain] Error:', err);
-    // Clean up file if it exists
     if (req.file?.path && fs.existsSync(req.file.path)) {
       fs.unlinkSync(req.file.path);
     }
@@ -278,7 +305,4 @@ app.get('/api/health', (_req, res) => res.json({ status: 'ok' }));
 const PORT = 5000;
 app.listen(PORT, () => {
   console.log(`[MediPlain] API server running on http://localhost:${PORT}`);
-  if (!GEMINI_API_KEY) {
-    console.warn('[MediPlain] WARNING: GEMINI_API_KEY is not set. Set it in your .env.local file.');
-  }
 });
