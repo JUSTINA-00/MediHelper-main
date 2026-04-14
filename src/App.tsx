@@ -121,7 +121,7 @@ export default function App() {
               <Stethoscope className="text-white w-7 h-7" />
             </div>
             <div>
-              <h1 className="text-3xl font-bold tracking-tight text-[#0D7377]">MediPlain</h1>
+              <h1 className="text-3xl font-bold tracking-tight text-[#0D7377]">Dr.Ceema</h1>
               <p className="text-gray-500 font-medium">Your Medical Documents, In Plain Language</p>
             </div>
           </div>
@@ -370,7 +370,7 @@ export default function App() {
       </main>
 
       <footer className="max-w-7xl mx-auto px-6 py-12 border-t border-gray-100 text-center text-gray-400 text-sm font-medium">
-        <p>© 2026 MediPlain Document Intelligence. For informational purposes only. Always consult your physician.</p>
+        <p>© 2026 Dr.Ceema. For informational purposes only. Always consult your physician.</p>
       </footer>
     </div>
   );
